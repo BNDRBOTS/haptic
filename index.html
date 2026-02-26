@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Haptic Typography Engine</title>
+    <style>
+        :root {
+            --bg-color: #050505;
+            --text-color: #ffffff;
+            --accent-color: #4a4a4a;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            background-color: var(--bg-color);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden;
+            color: var(--text-color);
+            overscroll-behavior: none;
+        }
+
+        /* The layer beneath the particles */
+        .underlay-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 1;
+            pointer-events: none; /* Let interactions pass through to canvas */
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            width: 80%;
+            max-width: 600px;
+        }
+
+        .underlay-content h2 {
+            font-size: clamp(1rem, 2vw, 1.5rem);
+            font-weight: 400;
+            letter-spacing: 0.2em;
+            color: var(--accent-color);
+            text-transform: uppercase;
+        }
+
+        .underlay-content p {
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            color: #888;
+        }
+
+        /* The physics layer */
+        #haptic-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            cursor: crosshair;
+        }
+
+        /* UI overlays */
+        .metrics {
+            position: absolute;
+            bottom: 2rem;
+            left: 2rem;
+            z-index: 20;
+            font-size: 0.75rem;
+            font-family: monospace;
+            color: #555;
+            pointer-events: none;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="underlay-content" id="reveal-target">
+        <h2>Interface As Material</h2>
+        <p>The boundary between content and control is dissolved. Typography exhibits literal mass, friction, and kinetic resistance under interaction.</p>
+    </div>
+
+    <canvas id="haptic-canvas"></canvas>
+
+    <div class="metrics">
+        <div id="particle-count">Particles: 0</div>
+        <div id="engine-status">Engine: Active</div>
+    </div>
+
+    <script>
+        /**
+         * Haptic Typography Physics Engine
+         * Implements particle-based rendering of text with mass, spring physics, and cursor repulsion.
+         */
+        class HapticTypography {
+            constructor() {
+                this.canvas = document.getElementById('haptic-canvas');
+                this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+                
+                this.particles = [];
+                this.text = 'HAPTIC';
+                
+                // Interaction state
+                this.mouse = {
+                    x: null,
+                    y: null,
+                    radius: 150, // Magnetic field size
+                    isActive: false
+                };
+
+                // Reveal State
+                this.revealTarget = document.getElementById('reveal-target');
+                this.particlesDisplaced = 0;
+
+                // Engine configuration
+                this.config = {
+                    resolution: 4, // Higher = fewer particles (better performance)
+                    baseFriction: 0.82,
+                    baseSpring: 0.05,
+                    particleColor: '#ffffff',
+                    repulsionStrength: 80
+                };
+
+                this.init();
+                this.bindEvents();
+                this.animate();
+            }
+
+            init() {
+                this.resizeCanvas();
+                
+                // Safety check for iframe/sandbox environments where dimensions might initially be 0
+                if (this.canvas.width === 0 || this.canvas.height === 0) {
+                    setTimeout(() => this.init(), 50);
+                    return;
+                }
+                
+                this.createParticles();
+            }
+
+            resizeCanvas() {
+                // Use fallback dimensions if window.innerWidth is 0 (can happen in isolated iframes)
+                this.canvas.width = window.innerWidth || document.documentElement.clientWidth || 1024;
+                this.canvas.height = window.innerHeight || document.documentElement.clientHeight || 768;
+            }
+
+            createParticles() {
+                this.particles = [];
+                
+                // Prevent IndexSizeError by ensuring width and height are at least 1
+                const width = Math.max(1, this.canvas.width);
+                const height = Math.max(1, this.canvas.height);
+                
+                // 1. Draw text to canvas to extract pixel data
+                const fontSize = Math.min(width * 0.18, 300);
+                this.ctx.clearRect(0, 0, width, height);
+                this.ctx.fillStyle = '#ffffff';
+                this.ctx.font = `900 ${fontSize}px Inter, sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                
+                const textX = width / 2;
+                const textY = height / 2;
+                
+                this.ctx.fillText(this.text, textX, textY);
+                
+                // 2. Read pixels safely
+                const textCoordinates = this.ctx.getImageData(0, 0, width, height);
+                this.ctx.clearRect(0, 0, width, height); // clear the template
+
+                // 3. Generate particles based on alpha channel
+                for (let y = 0; y < textCoordinates.height; y += this.config.resolution) {
+                    for (let x = 0; x < textCoordinates.width; x += this.config.resolution) {
+                        const index = (y * textCoordinates.width + x) * 4;
+                        const alpha = textCoordinates.data[index + 3];
+                        
+                        if (alpha > 128) { // If pixel is mostly opaque
+                            this.particles.push(new Particle(x, y, this.config));
+                        }
+                    }
+                }
+
+                document.getElementById('particle-count').innerText = `Particles: ${this.particles.length}`;
+            }
+
+            bindEvents() {
+                window.addEventListener('resize', () => {
+                    this.init();
+                });
+
+                // Mouse events
+                window.addEventListener('mousemove', (e) => {
+                    this.mouse.x = e.x;
+                    this.mouse.y = e.y;
+                    this.mouse.isActive = true;
+                });
+
+                window.addEventListener('mouseout', () => {
+                    this.mouse.isActive = false;
+                });
+
+                // Touch support mapping
+                window.addEventListener('touchstart', (e) => {
+                    this.mouse.x = e.touches[0].clientX;
+                    this.mouse.y = e.touches[0].clientY;
+                    this.mouse.isActive = true;
+                }, { passive: true });
+
+                window.addEventListener('touchmove', (e) => {
+                    this.mouse.x = e.touches[0].clientX;
+                    this.mouse.y = e.touches[0].clientY;
+                }, { passive: true });
+
+                window.addEventListener('touchend', () => {
+                    this.mouse.isActive = false;
+                });
+            }
+
+            updateRevealState() {
+                // If a significant percentage of particles are far from their base, show the underlay
+                const threshold = this.particles.length * 0.15; // 15% displaced
+                
+                if (this.particlesDisplaced > threshold) {
+                    this.revealTarget.style.opacity = '1';
+                } else {
+                    this.revealTarget.style.opacity = '0';
+                }
+            }
+
+            animate() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.particlesDisplaced = 0;
+
+                for (let i = 0; i < this.particles.length; i++) {
+                    const p = this.particles[i];
+                    p.update(this.mouse);
+                    p.draw(this.ctx);
+
+                    // Check displacement for reveal logic
+                    if (Math.abs(p.x - p.baseX) > 10 || Math.abs(p.y - p.baseY) > 10) {
+                        this.particlesDisplaced++;
+                    }
+                }
+
+                this.updateRevealState();
+                requestAnimationFrame(() => this.animate());
+            }
+        }
+
+        /**
+         * Individual Particle Entity
+         */
+        class Particle {
+            constructor(x, y, engineConfig) {
+                this.x = x;
+                this.y = y;
+                this.baseX = x;
+                this.baseY = y;
+                
+                // Physics properties (Varied for organic, tactile feel)
+                this.size = Math.random() * 2 + 1;
+                // Density determines how strongly it resists the mouse and how heavy it feels
+                this.density = (Math.random() * 30) + 5; 
+                this.friction = engineConfig.baseFriction + (Math.random() * 0.05);
+                this.spring = engineConfig.baseSpring + (Math.random() * 0.03);
+                
+                this.vx = 0;
+                this.vy = 0;
+                this.color = engineConfig.particleColor;
+            }
+
+            update(mouse) {
+                // 1. Calculate Mouse Repulsion (Magnetic Field)
+                if (mouse.isActive && mouse.x !== null) {
+                    const dx = mouse.x - this.x;
+                    const dy = mouse.y - this.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < mouse.radius) {
+                        // Force increases as distance decreases
+                        const forceDirectionX = dx / distance;
+                        const forceDirectionY = dy / distance;
+                        const force = (mouse.radius - distance) / mouse.radius;
+                        
+                        // Apply force based on inverse density (heavy particles move less)
+                        const accelerationX = forceDirectionX * force * (100 / this.density);
+                        const accelerationY = forceDirectionY * force * (100 / this.density);
+                        
+                        this.vx -= accelerationX;
+                        this.vy -= accelerationY;
+                    }
+                }
+
+                // 2. Calculate Spring Force (Return to base)
+                const springDx = this.baseX - this.x;
+                const springDy = this.baseY - this.y;
+                
+                this.vx += springDx * this.spring;
+                this.vy += springDy * this.spring;
+
+                // 3. Apply Friction (Damping)
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+
+                // 4. Apply Velocity to Position
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+
+            draw(ctx) {
+                // Use fillRect for better performance than arc
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+            }
+        }
+
+        // Initialize engine strictly after load
+        window.onload = () => {
+            // Check canvas support failsafe
+            if (!!window.CanvasRenderingContext2D) {
+                // Add a slight delay to ensure the DOM layout is completely computed before grabbing dimensions
+                setTimeout(() => {
+                    new HapticTypography();
+                }, 50);
+            } else {
+                document.getElementById('engine-status').innerText = 'Engine: Error (Canvas not supported)';
+            }
+        };
+    </script>
+</body>
+</html>
